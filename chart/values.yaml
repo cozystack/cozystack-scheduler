@@ -1,0 +1,2 @@
+image: ghcr.io/cozystack/cozystack/cozystack-scheduler:latest
+replicas: 1
