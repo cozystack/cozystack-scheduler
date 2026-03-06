@@ -3,9 +3,9 @@ Package merge defines the interface for merging scheduling constraints
 from a pod's spec with those defined in a SchedulingClass custom resource.
 
 The flow is:
- 1. Read the pod's annotation (e.g. "schedulingclass.cozystack.io/name") to
+ 1. Read the pod's annotation "scheduler.cozystack.io/scheduling-class" to
     identify the SchedulingClass CR.
- 2. Fetch the SchedulingClass.cozystack.io/v1alpha1 resource from the cluster.
+ 2. Fetch the SchedulingClass resource from the cluster.
  3. Merge the CR's constraints with the pod's own spec-level constraints.
  4. Return the merged result for use by the scheduling plugin.
 */
@@ -16,8 +16,8 @@ import (
 	"k8s.io/kubernetes/pkg/scheduler/framework"
 )
 
-// TODO: Define the annotation key used to reference a SchedulingClass CR.
-// const SchedulingClassAnnotation = "schedulingclass.cozystack.io/name"
+// SchedulingClassAnnotation is the pod annotation that references a SchedulingClass CR by name.
+const SchedulingClassAnnotation = "scheduler.cozystack.io/scheduling-class"
 
 // InterPodAffinityTerms holds the merged set of inter-pod affinity and
 // anti-affinity terms for a single pod, combining pod spec and SchedulingClass.
@@ -52,17 +52,12 @@ type TopologySpreadTerms struct {
 // ConstraintMerger fetches a SchedulingClass CR for a pod and merges its
 // constraints with those already present on the pod spec.
 //
-// TODO: Implement this interface. The implementation will need:
-//   - A dynamic client or typed client for SchedulingClass.cozystack.io/v1alpha1
-//   - A lister/informer (with caching) for SchedulingClass resources
-//   - Merge semantics: how CR terms combine with pod spec terms (append, override, etc.)
 type ConstraintMerger interface {
 	// MergeInterPodAffinity returns the merged inter-pod affinity terms for the
-	// given pod. It reads the pod's annotation to find the SchedulingClass CR
-	// and appends/merges its affinity terms with those from the pod spec.
-	// The podInfo argument contains the terms already parsed from the pod spec.
-	// If no SchedulingClass annotation is present, it returns the original terms unchanged.
-	MergeInterPodAffinity(pod *v1.Pod, podInfo *framework.PodInfo) (*InterPodAffinityTerms, error)
+	// given pod. It reads the pod's annotation to find the SchedulingClass CR,
+	// parses both the pod spec and CR terms, and returns the combined result.
+	// If no SchedulingClass annotation is present, it returns nil.
+	MergeInterPodAffinity(pod *v1.Pod) (*InterPodAffinityTerms, error)
 
 	// MergeNodeAffinity returns the merged node affinity for the given pod.
 	// It combines pod.Spec.NodeSelector, pod.Spec.Affinity.NodeAffinity, and

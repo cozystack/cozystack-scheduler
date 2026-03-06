@@ -31,6 +31,8 @@ import (
 	"k8s.io/kubernetes/pkg/scheduler/framework/parallelize"
 	"k8s.io/kubernetes/pkg/scheduler/framework/plugins/feature"
 	"k8s.io/kubernetes/pkg/scheduler/util"
+
+	"github.com/cozystack/cozystack-scheduler/pkg/merge"
 )
 
 // Name is the name of the plugin used in the plugin registry and configurations.
@@ -49,10 +51,7 @@ type InterPodAffinity struct {
 	sharedLister              framework.SharedLister
 	nsLister                  listersv1.NamespaceLister
 	enableSchedulingQueueHint bool
-	// TODO: Add a merge.ConstraintMerger field here.
-	// It will be initialized in New() and used in PreFilter/PreScore to merge
-	// the pod's affinity terms with those from the SchedulingClass CR.
-	// merger merge.ConstraintMerger
+	merger                    merge.ConstraintMerger
 }
 
 // Name returns name of the plugin. It is used in logs, etc.
@@ -86,7 +85,7 @@ func (pl *InterPodAffinity) EventsToRegister(_ context.Context) ([]framework.Clu
 }
 
 // New initializes a new plugin and returns it.
-func New(_ context.Context, plArgs runtime.Object, h framework.Handle, fts feature.Features) (framework.Plugin, error) {
+func New(ctx context.Context, plArgs runtime.Object, h framework.Handle, fts feature.Features) (framework.Plugin, error) {
 	if h.SnapshotSharedLister() == nil {
 		return nil, fmt.Errorf("SnapshotSharedlister is nil")
 	}
@@ -103,6 +102,11 @@ func New(_ context.Context, plArgs runtime.Object, h framework.Handle, fts featu
 		sharedLister:              h.SnapshotSharedLister(),
 		nsLister:                  h.SharedInformerFactory().Core().V1().Namespaces().Lister(),
 		enableSchedulingQueueHint: fts.EnableSchedulingQueueHint,
+	}
+
+	pl.merger, err = merge.SharedMerger(ctx, h)
+	if err != nil {
+		return nil, fmt.Errorf("creating constraint merger: %w", err)
 	}
 
 	return pl, nil
@@ -171,12 +175,12 @@ func (pl *InterPodAffinity) isSchedulableAfterPodChange(logger klog.Logger, pod 
 		return framework.Queue, err
 	}
 
-	// TODO(cozystack): Merge terms and antiTerms with SchedulingClass CR.
-	// Use pl.merger.MergeInterPodAffinity() to get the merged terms, then use
-	// merged.RequiredAffinityTerms / merged.RequiredAntiAffinityTerms here
-	// instead of the spec-only terms above.
-	// This affects queue hint accuracy: without merging, the scheduler may skip
-	// re-queuing pods that become schedulable due to CR-defined affinity terms.
+	if merged, mergeErr := pl.merger.MergeInterPodAffinity(pod); mergeErr != nil {
+		return framework.Queue, nil
+	} else if merged != nil {
+		terms = merged.RequiredAffinityTerms
+		antiTerms = merged.RequiredAntiAffinityTerms
+	}
 
 	// Pod is updated. Return Queue when the updated pod matching the target pod's affinity or not matching anti-affinity.
 	// Note that, we don't need to check each affinity individually when the Pod has more than one affinity
@@ -231,9 +235,13 @@ func (pl *InterPodAffinity) isSchedulableAfterNodeChange(logger klog.Logger, pod
 		return framework.Queue, err
 	}
 
-	// TODO(cozystack): Merge terms with SchedulingClass CR's affinity topology keys.
-	// Same consideration as isSchedulableAfterPodChange — the queue hint must account
-	// for topology keys introduced by the CR, not just the pod spec.
+	merged, mergeErr := pl.merger.MergeInterPodAffinity(pod)
+	if mergeErr != nil {
+		return framework.Queue, nil
+	}
+	if merged != nil {
+		terms = merged.RequiredAffinityTerms
+	}
 
 	// When queuing this Pod:
 	// - 1. A new node is added with the pod affinity topologyKey, the pod may become schedulable.
@@ -271,8 +279,9 @@ func (pl *InterPodAffinity) isSchedulableAfterNodeChange(logger klog.Logger, pod
 	if err != nil {
 		return framework.Queue, err
 	}
-
-	// TODO(cozystack): Merge antiTerms with SchedulingClass CR's anti-affinity topology keys.
+	if merged != nil {
+		antiTerms = merged.RequiredAntiAffinityTerms
+	}
 
 	// When queuing this Pod:
 	// - 1. A new node is added, the pod may become schedulable.

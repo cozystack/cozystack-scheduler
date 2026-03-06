@@ -135,14 +135,18 @@ func (pl *InterPodAffinity) PreScore(
 		return framework.NewStatus(framework.Error, "empty shared lister in InterPodAffinity PreScore")
 	}
 
-	// TODO(cozystack): The hasConstraints check below only looks at pod.Spec.Affinity.
-	// After merging with the SchedulingClass CR, the pod may gain preferred affinity
-	// terms that aren't in the spec. Adjust hasConstraints accordingly, or always
-	// set it to true when a SchedulingClass annotation is present.
+	merged, mergeErr := pl.merger.MergeInterPodAffinity(pod)
+	if mergeErr != nil {
+		return framework.AsStatus(mergeErr)
+	}
+
 	affinity := pod.Spec.Affinity
 	hasPreferredAffinityConstraints := affinity != nil && affinity.PodAffinity != nil && len(affinity.PodAffinity.PreferredDuringSchedulingIgnoredDuringExecution) > 0
 	hasPreferredAntiAffinityConstraints := affinity != nil && affinity.PodAntiAffinity != nil && len(affinity.PodAntiAffinity.PreferredDuringSchedulingIgnoredDuringExecution) > 0
 	hasConstraints := hasPreferredAffinityConstraints || hasPreferredAntiAffinityConstraints
+	if merged != nil {
+		hasConstraints = hasConstraints || len(merged.PreferredAffinityTerms) > 0 || len(merged.PreferredAntiAffinityTerms) > 0
+	}
 
 	// Optionally ignore calculating preferences of existing pods' affinity rules
 	// if the incoming pod has no inter-pod affinities.
@@ -175,21 +179,10 @@ func (pl *InterPodAffinity) PreScore(
 		return framework.AsStatus(fmt.Errorf("failed to parse pod: %w", err))
 	}
 
-	// TODO(cozystack): Merge the pod's preferred affinity/anti-affinity terms with
-	// those from the SchedulingClass CR.
-	//
-	// After framework.NewPodInfo(pod) parses the pod spec into:
-	//   state.podInfo.PreferredAffinityTerms
-	//   state.podInfo.PreferredAntiAffinityTerms
-	//
-	// Call pl.merger.MergeInterPodAffinity(pod, state.podInfo) to get merged terms,
-	// then overwrite:
-	//   state.podInfo.PreferredAffinityTerms = merged.PreferredAffinityTerms
-	//   state.podInfo.PreferredAntiAffinityTerms = merged.PreferredAntiAffinityTerms
-	//
-	// This is the primary injection point for preferred (soft) inter-pod affinity
-	// constraints. Everything downstream (Score, NormalizeScore) reads from
-	// state.podInfo, so merging here is sufficient for the scoring path.
+	if merged != nil {
+		state.podInfo.PreferredAffinityTerms = merged.PreferredAffinityTerms
+		state.podInfo.PreferredAntiAffinityTerms = merged.PreferredAntiAffinityTerms
+	}
 
 	for i := range state.podInfo.PreferredAffinityTerms {
 		if err := pl.mergeAffinityTermNamespacesIfNotEmpty(&state.podInfo.PreferredAffinityTerms[i].AffinityTerm); err != nil {

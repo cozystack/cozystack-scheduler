@@ -58,21 +58,20 @@ func (s *preScoreState) Clone() framework.StateData {
 // 2) s.IgnoredNodes: the set of nodes that shouldn't be scored.
 // 3) s.TopologyNormalizingWeight: The weight to be given to each constraint based on the number of values in a topology.
 func (pl *PodTopologySpread) initPreScoreState(s *preScoreState, pod *v1.Pod, filteredNodes []*framework.NodeInfo, requireAllTopologies bool) error {
-	// TODO(cozystack): Merge the pod's soft topology spread constraints with the
-	// SchedulingClass CR BEFORE filtering by WhenUnsatisfiable action.
-	//
-	// Call pl.merger.MergeTopologySpreadConstraints(pod) to get the merged raw
-	// []v1.TopologySpreadConstraint list. If non-nil, use merged.Constraints
-	// as the input to filterTopologySpreadConstraints (with ScheduleAnyway)
-	// instead of pod.Spec.TopologySpreadConstraints.
-	//
-	// This is the injection point for soft topology spread constraints (scoring).
-	// It is independent of getConstraints() which handles hard constraints.
+	merged, mergeErr := pl.merger.MergeTopologySpreadConstraints(pod)
+	if mergeErr != nil {
+		return mergeErr
+	}
+
+	rawConstraints := pod.Spec.TopologySpreadConstraints
+	if merged != nil {
+		rawConstraints = merged.Constraints
+	}
 
 	var err error
-	if len(pod.Spec.TopologySpreadConstraints) > 0 {
+	if len(rawConstraints) > 0 {
 		s.Constraints, err = pl.filterTopologySpreadConstraints(
-			pod.Spec.TopologySpreadConstraints,
+			rawConstraints,
 			pod.Labels,
 			v1.ScheduleAnyway,
 		)
@@ -147,11 +146,9 @@ func (pl *PodTopologySpread) PreScore(
 	// Only require that nodes have all the topology labels if using
 	// non-system-default spreading rules. This allows nodes that don't have a
 	// zone label to still have hostname spreading.
-	//
-	// TODO(cozystack): After merging, this check should use the merged constraints
-	// length instead of pod.Spec.TopologySpreadConstraints. A pod with no spec-level
-	// constraints but CR-contributed constraints should set requireAllTopologies = true.
-	requireAllTopologies := len(pod.Spec.TopologySpreadConstraints) > 0 || !pl.systemDefaulted
+	merged, _ := pl.merger.MergeTopologySpreadConstraints(pod)
+	hasMergedConstraints := merged != nil && len(merged.Constraints) > 0
+	requireAllTopologies := len(pod.Spec.TopologySpreadConstraints) > 0 || hasMergedConstraints || !pl.systemDefaulted
 	err = pl.initPreScoreState(state, pod, filteredNodes, requireAllTopologies)
 	if err != nil {
 		return framework.AsStatus(fmt.Errorf("calculating preScoreState: %w", err))

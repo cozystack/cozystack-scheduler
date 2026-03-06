@@ -287,21 +287,12 @@ func (pl *InterPodAffinity) PreFilter(ctx context.Context, cycleState *framework
 		return nil, framework.NewStatus(framework.UnschedulableAndUnresolvable, fmt.Sprintf("parsing pod: %+v", err))
 	}
 
-	// TODO(cozystack): Merge the pod's required affinity/anti-affinity terms with
-	// those from the SchedulingClass CR.
-	//
-	// After framework.NewPodInfo(pod) parses the pod spec into:
-	//   s.podInfo.RequiredAffinityTerms
-	//   s.podInfo.RequiredAntiAffinityTerms
-	//
-	// Call pl.merger.MergeInterPodAffinity(pod, s.podInfo) to get merged terms,
-	// then overwrite:
-	//   s.podInfo.RequiredAffinityTerms = merged.RequiredAffinityTerms
-	//   s.podInfo.RequiredAntiAffinityTerms = merged.RequiredAntiAffinityTerms
-	//
-	// This is the primary injection point for required (hard) inter-pod affinity
-	// constraints. Everything downstream (Filter, AddPod, RemovePod) reads from
-	// s.podInfo, so merging here is sufficient for the filtering path.
+	if merged, mergeErr := pl.merger.MergeInterPodAffinity(pod); mergeErr != nil {
+		return nil, framework.AsStatus(mergeErr)
+	} else if merged != nil {
+		s.podInfo.RequiredAffinityTerms = merged.RequiredAffinityTerms
+		s.podInfo.RequiredAntiAffinityTerms = merged.RequiredAntiAffinityTerms
+	}
 
 	for i := range s.podInfo.RequiredAffinityTerms {
 		if err := pl.mergeAffinityTermNamespacesIfNotEmpty(&s.podInfo.RequiredAffinityTerms[i]); err != nil {

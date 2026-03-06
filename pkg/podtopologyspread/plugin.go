@@ -34,6 +34,8 @@ import (
 	"k8s.io/kubernetes/pkg/scheduler/framework/parallelize"
 	"k8s.io/kubernetes/pkg/scheduler/framework/plugins/feature"
 	"k8s.io/kubernetes/pkg/scheduler/util"
+
+	"github.com/cozystack/cozystack-scheduler/pkg/merge"
 )
 
 const (
@@ -69,11 +71,7 @@ type PodTopologySpread struct {
 	enableNodeInclusionPolicyInPodTopologySpread bool
 	enableMatchLabelKeysInPodTopologySpread      bool
 	enableSchedulingQueueHint                    bool
-	// TODO: Add a merge.ConstraintMerger field here.
-	// It will be initialized in New() and used in getConstraints/initPreScoreState
-	// to merge the pod's topology spread constraints with those from the
-	// SchedulingClass CR.
-	// merger merge.ConstraintMerger
+	merger                                       merge.ConstraintMerger
 }
 
 var _ framework.PreFilterPlugin = &PodTopologySpread{}
@@ -91,7 +89,7 @@ func (pl *PodTopologySpread) Name() string {
 }
 
 // New initializes a new plugin and returns it.
-func New(_ context.Context, plArgs runtime.Object, h framework.Handle, fts feature.Features) (framework.Plugin, error) {
+func New(ctx context.Context, plArgs runtime.Object, h framework.Handle, fts feature.Features) (framework.Plugin, error) {
 	if h.SnapshotSharedLister() == nil {
 		return nil, fmt.Errorf("SnapshotSharedlister is nil")
 	}
@@ -119,6 +117,10 @@ func New(_ context.Context, plArgs runtime.Object, h framework.Handle, fts featu
 			return nil, fmt.Errorf("SharedInformerFactory is nil")
 		}
 		pl.setListers(h.SharedInformerFactory())
+	}
+	pl.merger, err = merge.SharedMerger(ctx, h)
+	if err != nil {
+		return nil, fmt.Errorf("creating constraint merger: %w", err)
 	}
 	return pl, nil
 }
@@ -258,30 +260,21 @@ func (pl *PodTopologySpread) isSchedulableAfterPodChange(logger klog.Logger, pod
 // getConstraints extracts topologySpreadConstraint(s) from the Pod spec.
 // If the Pod doesn't have any topologySpreadConstraint, it returns default constraints.
 func (pl *PodTopologySpread) getConstraints(pod *v1.Pod) ([]topologySpreadConstraint, error) {
-	// TODO(cozystack): Merge the pod's topology spread constraints with the
-	// SchedulingClass CR BEFORE filtering by WhenUnsatisfiable action.
-	//
-	// Call pl.merger.MergeTopologySpreadConstraints(pod) to get the merged raw
-	// []v1.TopologySpreadConstraint list. If non-nil, use merged.Constraints
-	// as the input to filterTopologySpreadConstraints instead of
-	// pod.Spec.TopologySpreadConstraints.
-	//
-	// This is the primary injection point for hard (DoNotSchedule) topology
-	// spread constraints. It is called from:
-	//   - PreFilter (via calPreFilterState) for filtering
-	//   - isSchedulableAfterPodChange / isSchedulableAfterNodeChange for queue hints
-	//
-	// NOTE: initPreScoreState (scoring.go) has its own separate read of
-	// pod.Spec.TopologySpreadConstraints for soft (ScheduleAnyway) constraints
-	// and must be updated independently — see the TODO there.
+	merged, mergeErr := pl.merger.MergeTopologySpreadConstraints(pod)
+	if mergeErr != nil {
+		return nil, mergeErr
+	}
+
+	rawConstraints := pod.Spec.TopologySpreadConstraints
+	if merged != nil {
+		rawConstraints = merged.Constraints
+	}
 
 	var constraints []topologySpreadConstraint
 	var err error
-	if len(pod.Spec.TopologySpreadConstraints) > 0 {
-		// We have feature gating in APIServer to strip the spec
-		// so don't need to re-check feature gate, just check length of Constraints.
+	if len(rawConstraints) > 0 {
 		constraints, err = pl.filterTopologySpreadConstraints(
-			pod.Spec.TopologySpreadConstraints,
+			rawConstraints,
 			pod.Labels,
 			v1.DoNotSchedule,
 		)

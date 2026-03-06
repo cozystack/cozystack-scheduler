@@ -32,6 +32,8 @@ import (
 	"k8s.io/kubernetes/pkg/scheduler/framework/plugins/feature"
 	"k8s.io/kubernetes/pkg/scheduler/framework/plugins/helper"
 	"k8s.io/kubernetes/pkg/scheduler/util"
+
+	"github.com/cozystack/cozystack-scheduler/pkg/merge"
 )
 
 // NodeAffinity is a plugin that checks if a pod node selector matches the node label.
@@ -40,10 +42,7 @@ type NodeAffinity struct {
 	addedNodeSelector         *nodeaffinity.NodeSelector
 	addedPrefSchedTerms       *nodeaffinity.PreferredSchedulingTerms
 	enableSchedulingQueueHint bool
-	// TODO: Add a merge.ConstraintMerger field here.
-	// It will be initialized in New() and used in PreFilter/PreScore to merge
-	// the pod's node affinity with that from the SchedulingClass CR.
-	// merger merge.ConstraintMerger
+	merger                    merge.ConstraintMerger
 }
 
 var _ framework.PreFilterPlugin = &NodeAffinity{}
@@ -117,11 +116,18 @@ func (pl *NodeAffinity) isSchedulableAfterNodeChange(logger klog.Logger, pod *v1
 		return framework.QueueSkip, nil
 	}
 
-	// TODO(cozystack): Merge the pod's required node affinity with the SchedulingClass CR's
-	// node affinity before matching. Use pl.merger.MergeNodeAffinity(pod) and construct
-	// a merged RequiredNodeAffinity that includes both sources.
-	// Without this, queue hints won't account for CR-defined node affinity terms.
 	requiredNodeAffinity := nodeaffinity.GetRequiredNodeAffinity(pod)
+	if merged, mergeErr := pl.merger.MergeNodeAffinity(pod); mergeErr != nil {
+		return framework.Queue, nil
+	} else if merged != nil {
+		mergedPod := &v1.Pod{Spec: v1.PodSpec{
+			NodeSelector: merged.NodeSelector,
+			Affinity:     &v1.Affinity{NodeAffinity: &v1.NodeAffinity{
+				RequiredDuringSchedulingIgnoredDuringExecution: merged.RequiredNodeAffinity,
+			}},
+		}}
+		requiredNodeAffinity = nodeaffinity.GetRequiredNodeAffinity(mergedPod)
+	}
 	isMatched, err := requiredNodeAffinity.Match(modifiedNode)
 	if err != nil {
 		return framework.Queue, err
@@ -155,28 +161,33 @@ func (pl *NodeAffinity) PreFilter(ctx context.Context, cycleState *framework.Cyc
 	noNodeAffinity := (affinity == nil ||
 		affinity.NodeAffinity == nil ||
 		affinity.NodeAffinity.RequiredDuringSchedulingIgnoredDuringExecution == nil)
-	if noNodeAffinity && pl.addedNodeSelector == nil && pod.Spec.NodeSelector == nil {
-		// NodeAffinity Filter has nothing to do with the Pod.
+	merged, mergeErr := pl.merger.MergeNodeAffinity(pod)
+	if mergeErr != nil {
+		return nil, framework.AsStatus(mergeErr)
+	}
+
+	if merged == nil && noNodeAffinity && pl.addedNodeSelector == nil && pod.Spec.NodeSelector == nil {
 		return nil, framework.NewStatus(framework.Skip)
 	}
 
-	state := &preFilterState{requiredNodeSelectorAndAffinity: nodeaffinity.GetRequiredNodeAffinity(pod)}
-
-	// TODO(cozystack): Merge the pod's required node affinity with the SchedulingClass CR.
-	//
-	// nodeaffinity.GetRequiredNodeAffinity(pod) reads pod.Spec.NodeSelector and
-	// pod.Spec.Affinity.NodeAffinity.RequiredDuringSchedulingIgnoredDuringExecution.
-	//
-	// Call pl.merger.MergeNodeAffinity(pod) to get merged terms. If non-nil,
-	// reconstruct a RequiredNodeAffinity from the merged NodeSelector and
-	// RequiredNodeAffinity fields, and overwrite state.requiredNodeSelectorAndAffinity.
-	//
-	// This is the primary injection point for required (hard) node affinity.
-	// The Filter method reads from state, so merging here covers the entire
-	// filtering path. Also update the noNodeAffinity / terms variables below
-	// to reflect the merged state for the PreFilterResult optimization.
+	var state *preFilterState
+	if merged != nil {
+		mergedPod := &v1.Pod{Spec: v1.PodSpec{
+			NodeSelector: merged.NodeSelector,
+			Affinity:     &v1.Affinity{NodeAffinity: &v1.NodeAffinity{
+				RequiredDuringSchedulingIgnoredDuringExecution: merged.RequiredNodeAffinity,
+			}},
+		}}
+		state = &preFilterState{requiredNodeSelectorAndAffinity: nodeaffinity.GetRequiredNodeAffinity(mergedPod)}
+	} else {
+		state = &preFilterState{requiredNodeSelectorAndAffinity: nodeaffinity.GetRequiredNodeAffinity(pod)}
+	}
 
 	cycleState.Write(preFilterStateKey, state)
+
+	if merged != nil {
+		return nil, nil
+	}
 
 	if noNodeAffinity || len(affinity.NodeAffinity.RequiredDuringSchedulingIgnoredDuringExecution.NodeSelectorTerms) == 0 {
 		return nil, nil
@@ -265,16 +276,14 @@ func (pl *NodeAffinity) PreScore(ctx context.Context, cycleState *framework.Cycl
 		return framework.AsStatus(err)
 	}
 
-	// TODO(cozystack): Merge the pod's preferred node affinity with the SchedulingClass CR.
-	//
-	// getPodPreferredNodeAffinity(pod) reads
-	//   pod.Spec.Affinity.NodeAffinity.PreferredDuringSchedulingIgnoredDuringExecution.
-	//
-	// Call pl.merger.MergeNodeAffinity(pod) to get merged terms. If non-nil,
-	// append the CR's PreferredNodeAffinity terms and re-create
-	// preferredNodeAffinity via nodeaffinity.NewPreferredSchedulingTerms(mergedTerms).
-	// Also adjust the nil check below: even if the pod spec has no preferred terms,
-	// the CR might contribute some.
+	if merged, mergeErr := pl.merger.MergeNodeAffinity(pod); mergeErr != nil {
+		return framework.AsStatus(mergeErr)
+	} else if merged != nil && len(merged.PreferredNodeAffinity) > 0 {
+		preferredNodeAffinity, err = nodeaffinity.NewPreferredSchedulingTerms(merged.PreferredNodeAffinity)
+		if err != nil {
+			return framework.AsStatus(err)
+		}
+	}
 
 	if preferredNodeAffinity == nil && pl.addedPrefSchedTerms == nil {
 		// NodeAffinity Score has nothing to do with the Pod.
@@ -328,7 +337,7 @@ func (pl *NodeAffinity) ScoreExtensions() framework.ScoreExtensions {
 }
 
 // New initializes a new plugin and returns it.
-func New(_ context.Context, plArgs runtime.Object, h framework.Handle, fts feature.Features) (framework.Plugin, error) {
+func New(ctx context.Context, plArgs runtime.Object, h framework.Handle, fts feature.Features) (framework.Plugin, error) {
 	args, err := getArgs(plArgs)
 	if err != nil {
 		return nil, err
@@ -344,13 +353,16 @@ func New(_ context.Context, plArgs runtime.Object, h framework.Handle, fts featu
 				return nil, fmt.Errorf("parsing addedAffinity.requiredDuringSchedulingIgnoredDuringExecution: %w", err)
 			}
 		}
-		// TODO: parse requiredDuringSchedulingRequiredDuringExecution when it gets added to the API.
 		if terms := args.AddedAffinity.PreferredDuringSchedulingIgnoredDuringExecution; len(terms) != 0 {
 			pl.addedPrefSchedTerms, err = nodeaffinity.NewPreferredSchedulingTerms(terms)
 			if err != nil {
 				return nil, fmt.Errorf("parsing addedAffinity.preferredDuringSchedulingIgnoredDuringExecution: %w", err)
 			}
 		}
+	}
+	pl.merger, err = merge.SharedMerger(ctx, h)
+	if err != nil {
+		return nil, fmt.Errorf("creating constraint merger: %w", err)
 	}
 	return pl, nil
 }
