@@ -126,6 +126,9 @@ func New(ctx context.Context, plArgs runtime.Object, h framework.Handle, fts fea
 }
 
 func getArgs(obj runtime.Object) (config.PodTopologySpreadArgs, error) {
+	if obj == nil {
+		return config.PodTopologySpreadArgs{}, nil
+	}
 	ptr, ok := obj.(*config.PodTopologySpreadArgs)
 	if !ok {
 		return config.PodTopologySpreadArgs{}, fmt.Errorf("want args to be of type PodTopologySpreadArgs, got %T", obj)

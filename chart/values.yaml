@@ -1,2 +1,2 @@
-image: ghcr.io/cozystack/cozystack/cozystack-scheduler:latest
+image: ghcr.io/cozystack/cozystack/cozystack-scheduler:0ac2dc6-dirty@sha256:f28899fe11a5c1c1a4ba21897bf7b20ac82f18b5f4d0d50cb86550704720c624
 replicas: 1

@@ -368,6 +368,9 @@ func New(ctx context.Context, plArgs runtime.Object, h framework.Handle, fts fea
 }
 
 func getArgs(obj runtime.Object) (config.NodeAffinityArgs, error) {
+	if obj == nil {
+		return config.NodeAffinityArgs{}, nil
+	}
 	ptr, ok := obj.(*config.NodeAffinityArgs)
 	if !ok {
 		return config.NodeAffinityArgs{}, fmt.Errorf("args are not of type NodeAffinityArgs, got %T", obj)

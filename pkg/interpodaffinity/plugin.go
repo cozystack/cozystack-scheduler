@@ -113,6 +113,9 @@ func New(ctx context.Context, plArgs runtime.Object, h framework.Handle, fts fea
 }
 
 func getArgs(obj runtime.Object) (config.InterPodAffinityArgs, error) {
+	if obj == nil {
+		return config.InterPodAffinityArgs{}, nil
+	}
 	ptr, ok := obj.(*config.InterPodAffinityArgs)
 	if !ok {
 		return config.InterPodAffinityArgs{}, fmt.Errorf("want args to be of type InterPodAffinityArgs, got %T", obj)
