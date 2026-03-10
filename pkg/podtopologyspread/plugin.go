@@ -127,7 +127,9 @@ func New(ctx context.Context, plArgs runtime.Object, h framework.Handle, fts fea
 
 func getArgs(obj runtime.Object) (config.PodTopologySpreadArgs, error) {
 	if obj == nil {
-		return config.PodTopologySpreadArgs{}, nil
+		return config.PodTopologySpreadArgs{
+			DefaultingType: config.SystemDefaulting,
+		}, nil
 	}
 	ptr, ok := obj.(*config.PodTopologySpreadArgs)
 	if !ok {

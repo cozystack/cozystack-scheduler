@@ -5,6 +5,9 @@ PUSH ?= 1
 LOAD ?= 0
 BUILDX_ARGS ?=
 
+crd:
+	controller-gen crd paths=./pkg/apis/... output:crd:dir=chart/crds
+
 image:
 	docker buildx build $(BUILDX_ARGS) \
 		--tag $(IMAGE) \
