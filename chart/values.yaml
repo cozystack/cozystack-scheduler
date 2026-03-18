@@ -1,2 +1,9 @@
 image: ghcr.io/cozystack/cozystack/cozystack-scheduler:v0.1.1@sha256:b92224de53e64f269f38107f01d3684930dd13ebd571e7ba44621ba22a51fb7c
 replicas: 1
+# defaultLabelSelectorKeys overrides the pod label keys used to auto-populate
+# nil LabelSelectors in SchedulingClass affinity and topology spread terms.
+# When empty or unset, the binary defaults are used:
+#   - apps.cozystack.io/application.group
+#   - apps.cozystack.io/application.kind
+#   - apps.cozystack.io/application.name
+# defaultLabelSelectorKeys: []
