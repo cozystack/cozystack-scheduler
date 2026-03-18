@@ -12,12 +12,13 @@ The flow is:
 package merge
 
 import (
+	"github.com/cozystack/cozystack-scheduler/pkg/apis/v1alpha1"
 	v1 "k8s.io/api/core/v1"
 	"k8s.io/kubernetes/pkg/scheduler/framework"
 )
 
-// SchedulingClassAnnotation is the pod annotation that references a SchedulingClass CR by name.
-const SchedulingClassAnnotation = "scheduler.cozystack.io/scheduling-class"
+// SchedulingClassAnnotation is re-exported from the API types package for convenience.
+const SchedulingClassAnnotation = v1alpha1.SchedulingClassAnnotation
 
 // InterPodAffinityTerms holds the merged set of inter-pod affinity and
 // anti-affinity terms for a single pod, combining pod spec and SchedulingClass.

@@ -4,6 +4,7 @@ module github.com/cozystack/cozystack-scheduler
 go 1.24.0
 
 require (
+	github.com/cozystack/cozystack-scheduler/pkg/apis v0.0.0
 	k8s.io/api v0.33.9
 	k8s.io/apimachinery v0.33.9
 	k8s.io/client-go v0.33.9
@@ -116,6 +117,7 @@ require (
 // k8s.io/kubernetes' go.mod imports all these as v0.0.0 so go mod tidy fails spectacularly
 // these replacements should fix this
 replace (
+	github.com/cozystack/cozystack-scheduler/pkg/apis => ./pkg/apis
 	k8s.io/api => k8s.io/api v0.33.9
 	k8s.io/apiextensions-apiserver => k8s.io/apiextensions-apiserver v0.33.9
 	k8s.io/apimachinery => k8s.io/apimachinery v0.33.9

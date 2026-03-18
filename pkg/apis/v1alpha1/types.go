@@ -10,6 +10,16 @@ const (
 	Group    = "cozystack.io"
 	Version  = "v1alpha1"
 	Resource = "schedulingclasses"
+
+	// SchedulingClassAnnotation is the pod annotation that references a SchedulingClass CR by name.
+	SchedulingClassAnnotation = "scheduler.cozystack.io/scheduling-class"
+
+	// SchedulingClassLabel is the namespace label that indicates a scheduling class
+	// should be applied to workloads in that namespace.
+	SchedulingClassLabel = "scheduler.cozystack.io/scheduling-class"
+
+	// SchedulerName is the name of the cozystack custom scheduler.
+	SchedulerName = "cozystack-scheduler"
 )
 
 // +kubebuilder:object:root=true

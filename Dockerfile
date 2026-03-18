@@ -6,6 +6,7 @@ ARG TARGETARCH
 WORKDIR /app
 
 COPY go.mod go.sum ./
+COPY pkg/apis/go.mod pkg/apis/go.sum pkg/apis/
 RUN go mod download
 
 COPY cmd/ cmd/
