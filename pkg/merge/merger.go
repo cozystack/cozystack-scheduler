@@ -8,6 +8,7 @@ import (
 	"time"
 
 	v1 "k8s.io/api/core/v1"
+	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/runtime/schema"
 	"k8s.io/client-go/dynamic"
 	"k8s.io/client-go/dynamic/dynamicinformer"
@@ -16,6 +17,20 @@ import (
 
 	"github.com/cozystack/cozystack-scheduler/pkg/apis/v1alpha1"
 )
+
+// Canonical label keys set by the cozystack lineage webhook to identify an application.
+// Mirrored from github.com/cozystack/cozystack/pkg/apis/apps/v1alpha1.
+const (
+	ApplicationGroupLabel = "apps.cozystack.io/application.group"
+	ApplicationKindLabel  = "apps.cozystack.io/application.kind"
+	ApplicationNameLabel  = "apps.cozystack.io/application.name"
+)
+
+// DefaultLabelSelectorKeys holds the pod label keys used to auto-populate an
+// empty LabelSelector in SchedulingClass affinity and topology spread terms.
+// It is set at startup via --default-label-selector-keys and captured into the
+// merger struct at init time. Do not read after SharedMerger has been called.
+var DefaultLabelSelectorKeys []string
 
 var (
 	shared     *merger
@@ -30,7 +45,8 @@ var schedulingClassGVR = schema.GroupVersionResource{
 }
 
 type merger struct {
-	lister cache.GenericLister
+	lister            cache.GenericLister
+	labelSelectorKeys []string
 }
 
 // SharedMerger returns a shared ConstraintMerger backed by a dynamic informer
@@ -48,7 +64,10 @@ func SharedMerger(ctx context.Context, handle framework.Handle) (ConstraintMerge
 		waitCtx, cancel := context.WithTimeout(ctx, 10*time.Second)
 		defer cancel()
 		factory.WaitForCacheSync(waitCtx.Done())
-		shared = &merger{lister: resource.Lister()}
+		shared = &merger{
+			lister:            resource.Lister(),
+			labelSelectorKeys: append([]string(nil), DefaultLabelSelectorKeys...),
+		}
 	})
 	return shared, sharedErr
 }
@@ -109,28 +128,33 @@ func (m *merger) MergeInterPodAffinity(pod *v1.Pod) (*InterPodAffinityTerms, err
 		}
 	}
 
-	// Append CR terms
+	// Append CR terms, auto-populating empty LabelSelectors from pod lineage labels.
+	defaultSelector := lineageLabelSelector(pod, m.labelSelectorKeys)
 	if sc.Spec.PodAffinity != nil {
-		crTerms, err := framework.GetAffinityTerms(pod, sc.Spec.PodAffinity.RequiredDuringSchedulingIgnoredDuringExecution)
+		required := defaultAffinityTermSelectors(sc.Spec.PodAffinity.RequiredDuringSchedulingIgnoredDuringExecution, defaultSelector)
+		crTerms, err := framework.GetAffinityTerms(pod, required)
 		if err != nil {
 			return nil, fmt.Errorf("parsing CR affinity terms: %w", err)
 		}
 		result.RequiredAffinityTerms = append(result.RequiredAffinityTerms, crTerms...)
 
-		crPref, err := toWeightedAffinityTerms(pod, sc.Spec.PodAffinity.PreferredDuringSchedulingIgnoredDuringExecution)
+		preferred := defaultWeightedAffinityTermSelectors(sc.Spec.PodAffinity.PreferredDuringSchedulingIgnoredDuringExecution, defaultSelector)
+		crPref, err := toWeightedAffinityTerms(pod, preferred)
 		if err != nil {
 			return nil, fmt.Errorf("parsing CR preferred affinity terms: %w", err)
 		}
 		result.PreferredAffinityTerms = append(result.PreferredAffinityTerms, crPref...)
 	}
 	if sc.Spec.PodAntiAffinity != nil {
-		crTerms, err := framework.GetAffinityTerms(pod, sc.Spec.PodAntiAffinity.RequiredDuringSchedulingIgnoredDuringExecution)
+		required := defaultAffinityTermSelectors(sc.Spec.PodAntiAffinity.RequiredDuringSchedulingIgnoredDuringExecution, defaultSelector)
+		crTerms, err := framework.GetAffinityTerms(pod, required)
 		if err != nil {
 			return nil, fmt.Errorf("parsing CR anti-affinity terms: %w", err)
 		}
 		result.RequiredAntiAffinityTerms = append(result.RequiredAntiAffinityTerms, crTerms...)
 
-		crPref, err := toWeightedAffinityTerms(pod, sc.Spec.PodAntiAffinity.PreferredDuringSchedulingIgnoredDuringExecution)
+		preferred := defaultWeightedAffinityTermSelectors(sc.Spec.PodAntiAffinity.PreferredDuringSchedulingIgnoredDuringExecution, defaultSelector)
+		crPref, err := toWeightedAffinityTerms(pod, preferred)
 		if err != nil {
 			return nil, fmt.Errorf("parsing CR preferred anti-affinity terms: %w", err)
 		}
@@ -241,8 +265,64 @@ func (m *merger) MergeTopologySpreadConstraints(pod *v1.Pod) (*TopologySpreadTer
 		return nil, nil
 	}
 
+	crConstraints := make([]v1.TopologySpreadConstraint, len(sc.Spec.TopologySpreadConstraints))
+	for i := range sc.Spec.TopologySpreadConstraints {
+		crConstraints[i] = *sc.Spec.TopologySpreadConstraints[i].DeepCopy()
+	}
+	defaultSelector := lineageLabelSelector(pod, m.labelSelectorKeys)
+	for i := range crConstraints {
+		if crConstraints[i].LabelSelector == nil && defaultSelector != nil {
+			crConstraints[i].LabelSelector = defaultSelector.DeepCopy()
+		}
+	}
+
 	result := &TopologySpreadTerms{}
 	result.Constraints = append(result.Constraints, pod.Spec.TopologySpreadConstraints...)
-	result.Constraints = append(result.Constraints, sc.Spec.TopologySpreadConstraints...)
+	result.Constraints = append(result.Constraints, crConstraints...)
 	return result, nil
+}
+
+// defaultAffinityTermSelectors returns a deep copy of terms where any nil
+// LabelSelector is replaced with a deep copy of defaultSelector.
+func defaultAffinityTermSelectors(terms []v1.PodAffinityTerm, defaultSelector *metav1.LabelSelector) []v1.PodAffinityTerm {
+	out := make([]v1.PodAffinityTerm, len(terms))
+	for i := range terms {
+		out[i] = *terms[i].DeepCopy()
+		if out[i].LabelSelector == nil && defaultSelector != nil {
+			out[i].LabelSelector = defaultSelector.DeepCopy()
+		}
+	}
+	return out
+}
+
+// defaultWeightedAffinityTermSelectors returns a deep copy of terms where any
+// nil LabelSelector is replaced with a deep copy of defaultSelector.
+func defaultWeightedAffinityTermSelectors(terms []v1.WeightedPodAffinityTerm, defaultSelector *metav1.LabelSelector) []v1.WeightedPodAffinityTerm {
+	out := make([]v1.WeightedPodAffinityTerm, len(terms))
+	for i := range terms {
+		out[i] = *terms[i].DeepCopy()
+		if out[i].PodAffinityTerm.LabelSelector == nil && defaultSelector != nil {
+			out[i].PodAffinityTerm.LabelSelector = defaultSelector.DeepCopy()
+		}
+	}
+	return out
+}
+
+// lineageLabelSelector builds a LabelSelector from the pod's labels using the
+// configured label selector keys. Returns nil if any of the configured keys is
+// missing from the pod's labels — a partial match would produce an overly broad
+// selector that could cause unintended co-scheduling.
+func lineageLabelSelector(pod *v1.Pod, keys []string) *metav1.LabelSelector {
+	if len(keys) == 0 {
+		return nil
+	}
+	matchLabels := make(map[string]string, len(keys))
+	for _, key := range keys {
+		val, ok := pod.Labels[key]
+		if !ok {
+			return nil
+		}
+		matchLabels[key] = val
+	}
+	return &metav1.LabelSelector{MatchLabels: matchLabels}
 }

@@ -7,6 +7,11 @@ The flow is:
     identify the SchedulingClass CR.
  2. Fetch the SchedulingClass resource from the cluster.
  3. Merge the CR's constraints with the pod's own spec-level constraints.
+    For inter-pod affinity terms and topology spread constraints, any nil
+    LabelSelector is auto-populated from the pod's cozystack lineage labels
+    (configurable via --default-label-selector-keys). All configured keys
+    must be present on the pod; if any key is missing, no default selector
+    is applied.
  4. Return the merged result for use by the scheduling plugin.
 */
 package merge
@@ -51,8 +56,9 @@ type TopologySpreadTerms struct {
 }
 
 // ConstraintMerger fetches a SchedulingClass CR for a pod and merges its
-// constraints with those already present on the pod spec.
-//
+// constraints with those already present on the pod spec. For affinity and
+// topology spread terms with nil LabelSelectors, it auto-populates them from
+// the pod's lineage labels when all configured label keys are present.
 type ConstraintMerger interface {
 	// MergeInterPodAffinity returns the merged inter-pod affinity terms for the
 	// given pod. It reads the pod's annotation to find the SchedulingClass CR,
